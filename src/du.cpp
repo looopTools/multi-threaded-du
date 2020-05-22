@@ -94,7 +94,7 @@ size_t summarise(const std::filesystem::path path, const char unit)
 
     while(!_active.empty())
     {
-        std::cout << "..." << std::endl; 
+        std::cout << _active.size() << std::endl; 
        
     }
 
