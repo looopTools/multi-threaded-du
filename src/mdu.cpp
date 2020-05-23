@@ -1,13 +1,15 @@
 #include "du.hpp"
+
+#include <cstdlib>
+
 #include <string>
 
 #include <filesystem>
 
 #include <iostream>
+
 int main(int argc, char** argv)
 {
-    std::cout << argc << std::endl;
-
     char function;
     char option;
     std::string dir; 
@@ -42,6 +44,7 @@ int main(int argc, char** argv)
                 if (tmp == '-')
                 {
                     function = argv[1][1];
+
                     option = 'b';  
                 }
                 else
@@ -61,15 +64,11 @@ int main(int argc, char** argv)
         dir = std::string(argv[argc - 1]);
     }
 
-    std::cout << "du on: " << dir << " with function " << function << " and option " << option << std::endl;
-
     if (function == 's')
     {
         std::cout << summarise(std::filesystem::path(dir), option) << std::endl; 
         
     }
-
     
-        
     return 0; 
 }

@@ -1,104 +1,174 @@
 #include "du.hpp"
 
-#include <filesystem>
-#include <map>
-
+#include <chrono>
 #include <iostream>
-ThreadPool _pool(std::thread::hardware_concurrency());
+#include <cstdlib>
 
-std::map<std::filesystem::path, uint8_t> _active;
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-std::mutex _active_mutex;
-std::mutex _result_mutex;
-size_t x() {return 0;}
-
-const size_t base_unit = 1024; 
-
-
-void summarise(const std::filesystem::path path, size_t& result)
+void _find_files(const std::filesystem::path& base, std::queue<std::filesystem::path>& paths)
 {
-    std::vector<std::filesystem::path> files;
-    
-    for (const auto& sub_path : std::filesystem::directory_iterator(path))
+    paths.push(base); 
+    for (const auto& entry : std::filesystem::directory_iterator(base))
     {
-        if (std::filesystem::is_directory(sub_path))
+        if (std::filesystem::is_directory(entry))
         {
-            {
-                std::lock_guard<std::mutex> lock(_active_mutex);
-                _active[path] = 1;
-            }
-            _pool.enqueue([sub_path, &result]()
-                      {
-                          summarise(sub_path, result); 
-                      });
+            _find_files(entry, paths);
         }
         else
         {
-           files.push_back(sub_path);
+            paths.push(entry);
         }
     }
+}
 
-    size_t folder_result = std::filesystem::file_size(path);
-    for (const auto file : files)
+std::uintmax_t _directory_size(std::filesystem::path path)
+{
+    FILE* fp = NULL;
+
+    fp = fopen(path.string().c_str(), "r");
+    if (fp == NULL)
     {
-        if (!std::filesystem::is_directory(file))
-        {
-            folder_result += std::filesystem::file_size(file);
-        }
-        // TODO: Added stat for dir
+        std::cout << "Unable to get size of direcotry file: " << path.string() << std::endl;
+        std::exit(EXIT_FAILURE);
     }
 
-    std::lock_guard<std::mutex> lock(_result_mutex);
-    result += folder_result;
-    _active.erase(path);
-
+    int fd = fileno(fp);
+    struct stat buf;
+    fstat(fd, &buf);
+    auto result = static_cast<std::uintmax_t>(buf.st_size);
+    if (fclose(fp) != 0)
+    {
+        std::cout << "Unable to close directory file: " << path.string() << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    return result; 
     
 }
 
-size_t summarise(const std::filesystem::path path, const char unit)
+void summarise(std::queue<std::filesystem::path>& paths, std::uintmax_t& result,
+               const uint8_t thread_id, std::mutex& path_mutex, std::mutex& result_mutex, std::map<uint8_t, bool>& complete)
 {
-    size_t result = 0;
-    std::vector<std::filesystem::path> files;
-    for (const auto& sub_path : std::filesystem::directory_iterator(path))
+
+    std::vector<std::filesystem::path> t_paths;
     {
-        if (std::filesystem::is_directory(sub_path))
+        std::lock_guard<std::mutex> lock(path_mutex);
+        if (paths.size() == 0)
         {
-            _pool.enqueue([sub_path, &result]()
-                          {
-                              summarise(sub_path, result); 
-                          });
+            complete[thread_id] = true;
+        }
+        else if (paths.size() >= 4)
+        {
+            for (uint8_t i = 0; i < 4; ++i)
+            {
+                t_paths.push_back(paths.front());
+                paths.pop();
+            }
+            
         }
         else
         {
-            files.push_back(sub_path);
+            for (uint8_t i = 0; i < paths.size(); ++i)
+            {
+                t_paths.push_back(paths.front());
+                paths.pop();
+            }
         }
     }
 
-
-
-    size_t folder_result = 0; // TODO: ADD STAT std::filesystem::file_size(path);
-    
-    for (const auto& file : files)
+    if (t_paths.size() == 0)
     {
-        if (!std::filesystem::is_directory(file))
+        return; 
+    }
+
+    std::uintmax_t local_result = 0;
+
+    for (uint8_t i = 0; i < t_paths.size(); ++i)
+    {
+        if (!std::filesystem::is_directory(t_paths.at(i)))
         {
-            folder_result += std::filesystem::file_size(file);
+            local_result += std::filesystem::file_size(t_paths.at(i));
         }
-        // TODO: add stat for dir 
-    }    
-
-    {
-        std::lock_guard<std::mutex> lock(_result_mutex);
-        result += folder_result; 
+        else
+        {
+            local_result += _directory_size(t_paths.at(i));
+            // implement stat check
+        }
     }
 
-    while(!_active.empty())
     {
-        std::cout << _active.size() << std::endl; 
-       
+        std::lock_guard<std::mutex> lock(result_mutex);
+        result += local_result;
+    }
+    {
+        std::lock_guard<std::mutex> lock(path_mutex);
+        if (paths.size() == 0)
+        {
+            complete[thread_id] = true;
+        }
     }
 
+    bool all_complete = true;
 
+    for (auto it = complete.begin(); it != complete.end(); ++it)
+    {
+        if (it->second == false)
+        {
+            all_complete = false;
+            break; 
+        }
+    }
+    summarise(paths, result, thread_id, path_mutex, result_mutex, complete);    
+}
+
+
+
+
+size_t summarise(const std::filesystem::path base, const char unit)
+{
+
+    std::queue<std::filesystem::path> paths;
+    _find_files(base, paths);
+
+    
+    ThreadPool pool(std::thread::hardware_concurrency());
+
+    std::mutex path_mutex;
+    std::mutex result_mutex; 
+    
+    std::map<uint8_t, bool> complete;  
+        
+    std::uintmax_t result = 0;
+
+    for (uint8_t i = 0; i < std::thread::hardware_concurrency(); ++i)
+    {
+        complete[i] = false; 
+        pool.enqueue([&paths, &result, i, &path_mutex, &result_mutex, &complete](){
+                         summarise(paths, result, i, path_mutex, result_mutex, complete);
+                     });
+    }
+
+    bool all_complete = false;
+    while(!all_complete)
+    {
+        bool _complete = true;
+        for (auto it = complete.begin(); it != complete.end(); ++it)
+        {
+            if (it->second == false)
+            {
+                _complete = false;
+                break; 
+            }
+        }
+        if (!_complete)
+        {
+            std::this_thread::sleep_for(std::chrono::microseconds{100}); 
+        }
+        all_complete = _complete;            
+    }
+    
     // TODO: find a better way 
     if (unit == 'b')
     {
@@ -106,17 +176,16 @@ size_t summarise(const std::filesystem::path path, const char unit)
     }
     else if (unit == 'k')
     {
-        return result / base_unit;
+        return result / BASE_UNIT;
     }
     else if (unit == 'm')
     {
-        return result / (base_unit * base_unit);
+        return result / (BASE_UNIT * BASE_UNIT);
     }
     else if (unit == 'g')
     {
-        return result / (base_unit * base_unit * base_unit);
+        return result / (BASE_UNIT * BASE_UNIT * BASE_UNIT);
     }
-    
     
     return 0; 
 }
