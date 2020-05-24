@@ -1,3 +1,11 @@
+PLATFORM = Linux
+ifeq ($(OS),Windows_NT)
+	PLATFORM = WIN
+else
+	PLATFORM := $(shell uname -s)
+endif
+
+
 
 # Dep URLS
 
@@ -20,7 +28,13 @@ THREAD_POOL_DIR = ThreadPool
 CC = clang++
 CXX_FLAGS = -std=c++17 -c
 CXX_PROG_FLAGS = -std=c++17 
-LINK_FLAGS = -I./$(DEP)/$(THREAD_POOL_DIR)
+INCLUDE_PATHS = -I./$(DEP)/$(THREAD_POOL_DIR)
+
+LINK_FLAGS = -pthread
+
+ifeq ($PLATFORM, Linux)
+	LINK_FLAGS += -lstdc++fs
+endif 
 
 # SRC FILES 
 SRC = src/du.cpp
@@ -44,9 +58,10 @@ dep:
 	fi	
 
 build:
-	$(CC) $(CXX_FLAGS) $(LINK_FLAGS) $(SRC) 
-	$(CC) $(CXX_FLAGS) $(LINK_FLAGS) $(SRC_PROG)
-	$(CC) -o $(PROG_NAME) $(CXX_PROG_FLAGS) $(OBJECTS)
+	$(CC) $(CXX_FLAGS) $(INCLUDE_PATHS) $(SRC) 
+	$(CC) $(CXX_FLAGS) $(INCLUDE_PATHS) $(SRC_PROG)
+	$(CC) -o $(PROG_NAME) $(CXX_PROG_FLAGS) $(OBJECTS) $(LINK_FLAGS)
+
 	mkdir -p $(BIN)
 	mv $(PROG_NAME) $(BIN)
 
